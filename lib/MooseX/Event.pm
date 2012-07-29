@@ -1,10 +1,12 @@
 # ABSTRACT: A Node style event Role for Moose
 package MooseX::Event;
 {
-  $MooseX::Event::VERSION = 'v0.2.0';
+  $MooseX::Event::VERSION = '0.3.0_2';
 }
 use Any::Moose ();
 use Any::Moose '::Exporter';
+
+use constant ROLE_CLASS => 'MooseX::Event::Role';
 
 {
     my($import,$unimport,$init_meta) = any_moose('::Exporter')->build_import_methods(
@@ -35,45 +37,39 @@ use Any::Moose '::Exporter';
 
         # I would expect that 'base_class_roles' in setup_import_methods would
         # do the below, but no, it doesn't.
-        if ( ! any_moose('::Util')->can('does_role')->( $caller, 'MooseX::Event::Role' ) ) {
-             require MooseX::Event::Role;
-             MooseX::Event::Role->meta->apply( $caller->meta, %{$with_args} );
+        if ( ! any_moose('::Util')->can('does_role')->( $caller, ROLE_CLASS ) ) {
+             eval q{ require }.ROLE_CLASS;
+             ROLE_CLASS->meta->apply( $caller->meta, %{$with_args} );
         }
     }
-   
+
     sub unimport { goto $unimport; }
     *init_meta = $init_meta if defined $init_meta;
 }
 
 
-our @listener_wrappers;
 
-
-sub add_listener_wrapper {
-    my( $wrapper ) = @_[1..$#_];
-    push @listener_wrappers, $wrapper;
-    return $wrapper;
-}
-
-
-sub remove_listener_wrapper {
-    my( $wrapper ) = @_[1..$#_];
-    @listener_wrappers = grep { $_ != $wrapper } @listener_wrappers;
-    return;
-}
-
-
-
-
-my $stub = sub {};
+my %meta;
 sub has_event {
     my $class = caller();
-    $class->meta->add_method( "event:$_" => $stub ) for @_;
+    for (@_) {
+        $class->meta->add_attribute(
+            "event:$_",
+            init_arg => undef,
+            is => 'ro',
+            lazy => 1,
+            default => sub {
+                require MooseX::Event::Meta;
+                MooseX::Event::Meta->new(object=>shift);
+            },
+            );
+    }
 }
 
 BEGIN { *has_events = \&has_event }
 
 no Any::Moose '::Exporter';
+
 
 1;
 
@@ -81,49 +77,65 @@ no Any::Moose '::Exporter';
 __END__
 =pod
 
+=encoding utf-8
+
 =head1 NAME
 
 MooseX::Event - A Node style event Role for Moose
 
 =head1 VERSION
 
-version v0.2.0
+version 0.3.0_2
 
 =head1 SYNOPSIS
 
   package Example {
       use MooseX::Event;
-      
+
       has_event 'pinged';
-      
+
       sub ping {
           my $self = shift;
           $self->emit('pinged');
       }
   }
-  
-  use 5.10.0;
+
+  use Event::Wrappable;
 
   my $example = Example->new;
 
-  $example->on( pinged => sub { say "Got a ping!" } );
-  $example->on( pinged => sub { say "Got another ping!" } );
+  $example->on( pinged => event { say "Got a ping!" } );
+  $example->on( pinged => event { say "Got another ping!" } );
 
   $example->ping; # prints "Got a ping!" and "Got another ping!"
 
   $example->remove_all_listeners( "pinged" ); # Remove all of the pinged listeners
 
-  $example->once( pinged => sub { say "First ping." } );
+  $example->once( pinged => event { say "First ping." } );
   $example->ping; $example->ping; # Only prints "First ping." once
 
-  my $listener = $example->on( pinged => sub { say "Ping" } );
+  my $listener = $example->on( pinged => event { say "Ping" } );
   $example->remove_listener( pinged => $listener );
 
   $example->ping(); # Does nothing
 
 =head1 DESCRIPTION
 
-This provides Node.js style events in a Role for Moose.
+MooseX::Event provides an event framework for Moose classes that is inspired
+by and similar to the one included with Node.js.  It provides class helpers
+to let you declare that you emit named events, methods for you to emit
+events with and methods to allow users of your class to declare event
+listeners.  If you want to make your class emit events, you're in the right
+place.
+
+Alternatively, if you just want to use a suite of classes whose use an event
+API like this one, you'll want to look at the L<ONE> module.
+ONE provides a layer on top of AnyEvent that uses MooseX::Event as it's
+interface.  This gives you an arguably nicer, and definitely more consistant
+interface to write your event based programs.
+
+This provides Node.js style events in a Role for Moose.  If you are looking
+to write a program using a Node.js style event loop, see the L<ONE> module.
 
 MooseX::Event is implemented as a Moose Role.  To add events to your object:
 
@@ -137,7 +149,7 @@ It provides a helper declare what events your object supports:
 
 Users of your class can now call the "on" method in order to register an event handler:
 
-  $obj->on( event1 => sub { say "I has an event"; } );
+  $obj->on( event1 => event { say "I has an event"; } );
 
 And clear their event listeners with:
 
@@ -145,39 +157,44 @@ And clear their event listeners with:
 
 Or add and clear just one listener:
 
-  my $listener = $obj->on( event1 => sub { say "Event here"; } );
+  my $listener = $obj->on( event1 => event { say "Event here"; } );
   $obj->remove_listener( event1 => $listener );
 
 You can trigger events from your class with the "emit" method:
 
   $self->emit( event1 => ( "arg1", "arg2", "argn" ) );
 
-You can remove the has_event and has_events helpers by unimporting MooseX::Event
+Events receive the object that they're attached to as their first argument. They are almost
+a kind of fleeting sort of method:
 
-  no MooseX::event;
+   $obj->on( event1 => event {
+       my $self = shift;
+       my( $arg1, $arg2, $arg3 ) = @_;
+       say "Arg3 was: $arg3\n";
+   } );
 
-=head1 CLASS METHODS
+At the bottom of your class, you should make sure you clean out your name space by calling
+no MooseX::Event.
 
-=head2 our method add_listener_wrapper( CodeRef $wrapper ) returns CodeRef
-
-Wrappers are called in reverse declaration order.  They take a the listener
-to be added as an argument, and return a wrapped listener.
-
-=head2 our method remove_listener_wrapper( CodeRef $wrapper )
-
-Removes a previously added listener wrapper.
+  no MooseX::Event;
 
 =head1 HELPERS
 
-=head2 sub has_event( Array[Str] *@event_names ) is export
+=head2 sub has_event( *@event_names ) is export
 
-=head2 sub has_events( Array[Str] *@event_names ) is export
+=head2 sub has_events( *@event_names ) is export
 
 Registers your class as being able to emit the event names listed.
 
-=head1 RELATED
+=for test_synopsis use v5.10.0;
+
+=head1 OTHER CLASSES LIKE THIS
 
 =over
+
+=item L<MooseX::Role::Listenable>
+
+=item L<MooseX::Callbacks>
 
 =item L<Object::Event>
 
@@ -195,13 +212,15 @@ Registers your class as being able to emit the event names listed.
 
 =item L<Aspect::Library::Listenable>
 
+=item L<Class::Listener>
+
 =item L<http://nodejs.org/docs/v0.5.4/api/events.html>
 
 =back
 
 =head1 SEE ALSO
 
-Please see those modules/websites for more information related to this module.
+
 
 =over 4
 
@@ -215,48 +234,34 @@ L<MooseX::Event::Role::ClassMethods|MooseX::Event::Role::ClassMethods>
 
 =back
 
-=for :stopwords cpan testmatrix url annocpan anno bugtracker rt cpants kwalitee diff irc mailto metadata placeholders
+=head1 SOURCE
+
+The development version is on github at L<http://https://github.com/iarna/MooseX-Event>
+and may be cloned from L<git://https://github.com/iarna/MooseX-Event.git>
+
+=for :stopwords cpan testmatrix url annocpan anno bugtracker rt cpants kwalitee diff irc mailto metadata placeholders metacpan
 
 =head1 SUPPORT
 
-=head2 Perldoc
-
-You can find documentation for this module with the perldoc command.
-
-  perldoc MooseX::Event
-
 =head2 Websites
 
-The following websites have more information about this module, and may be of help to you. As always,
-in addition to those websites please use your favorite search engine to discover more resources.
+More information can be found at:
 
 =over 4
 
 =item *
 
-Search CPAN
+MetaCPAN
 
-The default CPAN search engine, useful to view POD in HTML format.
+A modern, open-source CPAN search engine, useful to view POD in HTML format.
 
-L<http://search.cpan.org/dist/MooseX-Event>
+L<http://metacpan.org/release/MooseX-Event>
 
 =back
 
 =head2 Bugs / Feature Requests
 
-Please report any bugs or feature requests by email to C<bug-moosex-event at rt.cpan.org>, or through
-the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=MooseX-Event>. You will be automatically notified of any
-progress on the request by the system.
-
-=head2 Source Code
-
-The code is open to the world, and available for you to hack on. Please feel free to browse it and play
-with it, or whatever. If you want to contribute patches, please send me a diff or prod me to pull
-from your repository :)
-
-L<https://github.com/iarna/On-Event>
-
-  git clone https://github.com/iarna/On-Event.git
+Please report any bugs at L<https://github.com/iarna/MooseX-Event/issues>.
 
 =head1 AUTHOR
 
@@ -264,7 +269,7 @@ Rebecca Turner <becca@referencethis.com>
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2011 by Rebecca Turner.
+This software is copyright (c) 2012 by Rebecca Turner.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

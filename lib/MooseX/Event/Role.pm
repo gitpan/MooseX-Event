@@ -1,150 +1,106 @@
 # ABSTRACT: A Node style event Role for Moose
 package MooseX::Event::Role;
 {
-  $MooseX::Event::Role::VERSION = 'v0.2.0';
+  $MooseX::Event::Role::VERSION = '0.3.0_2';
 }
 use MooseX::Event ();
 use Any::Moose 'Role';
-
-has '_listeners'    => (isa=>'HashRef', is=>'ro', default=>sub{ {} });
-has '_aliases'      => (isa=>'HashRef', is=>'ro', default=>sub{ {} });
-
-
-has 'current_event' => (isa=>'Str|Undef', is=>'rw');
+use Scalar::Util qw( refaddr reftype blessed );
+use Event::Wrappable ();
 
 
-MooseX::Event::has_event('new_listener');
-
-
-sub event_exists {
+sub metaevent {
     my $self = shift;
     my( $event ) = @_;
-    return $self->can("event:$event");
+    my $accessor = $self->can("event:$event");
+    return defined $accessor ? $self->$accessor() : undef;
 }
+
+
+sub get_all_events {
+    my $self = shift;
+    return map {substr($_,6)} grep {/^event:/} map {$_->name} $self->meta->get_all_attributes;
+}
+
+
+sub event_listeners {
+    my $self = shift;
+    my( $event ) = @_;
+    my $emeta = $self->metaevent($event);
+    unless ( $emeta ) {
+        require Carp;
+        Carp::confess("Event $event does not exist");
+    }
+    my @listeners = values %{$emeta->listeners};
+    return wantarray? @listeners : scalar @listeners;
+}
+
+# Having the first argument flatten the argument list isn't actually allowed
+# in Rakudo (and possibly P6 too)
 
 
 sub on {
     my $self = shift;
-    my( $event, $listener, @wrappers ) = @_;
-    if ( ! $self->event_exists($event) ) {
-        die "Event $event does not exist";
-    }
-    $self->_listeners->{$event} ||= [];
-    $self->_aliases->{$event} ||= {};
-    if ( ! @{$self->_listeners->{$event}} and $self->can('activate_event') ) {
-        $self->activate_event($event);
-    }
-    my @aliases;
-    my $wrapped = $listener;
-    for ( reverse(@wrappers), reverse(@MooseX::Event::listener_wrappers) ) {
-        push @aliases, 0+$wrapped;
-        $wrapped = $_->( $wrapped );
-    }
-    $self->_aliases->{$event}{0+$wrapped} = \@aliases;
-    for ( @aliases ) {
-        $self->_aliases->{$event}{$_} = $wrapped;
-    }
-    $self->emit('new_listener', $event, $wrapped);
-    push @{ $self->_listeners->{$event} }, $wrapped;
-    return $wrapped;
-}
+    my $listener = pop;
 
+    # If it's not an Event::Wrappable object, make it one.
+    if ( ! blessed $listener or ! $listener->isa("Event::Wrappable") ) {
+        $listener = &Event::Wrappable::event( $listener );
+    }
+
+    for my $event (@_) {
+        my $emeta = $self->metaevent($event);
+        unless ( $emeta ) {
+            require Carp;
+            Carp::confess("Event $event does not exist");
+        }
+        $emeta->listen( $listener );
+    }
+    return $listener;
+}
 
 sub once {
     my $self = shift;
-    $self->on( @_, sub {
-        my($listener) = @_;
-        my $wrapped;
-        $wrapped = sub {
-            my $self = shift;
-            $self->remove_listener($self->current_event=>$wrapped);
-            $wrapped=undef;
-            goto $listener;
-        };
-        return $wrapped;
-    });
-}
+    my $listener = pop;
 
-BEGIN {
-
-
-    my $emit_stock = sub {
-        my $self = shift;
-        my( $event, @args ) = @_;
-        if ( ! $self->event_exists($event) ) {
-            die "Event $event does not exist";
-        }
-        return unless exists $self->_listeners->{$event};
-        my $ce = $self->current_event;
-        $self->current_event( $event );
-        foreach ( @{ $self->_listeners->{$event} } ) {
-            $_->($self,@args);
-        }
-        $self->current_event($ce);
-        return;
-    };
-
-
-    my $emit_coro = sub {
-        my $self = shift;
-        my( $event, @args ) = @_;
-        if ( ! $self->event_exists($event) ) {
-            die "Event $event does not exist";
-        }
-        return unless exists $self->_listeners->{$event};
-
-        foreach my $todo ( @{ $self->_listeners->{$event} } ) {
-            my $ce;
-            &Coro::async( sub {
-                &Coro::on_enter( sub {
-                    $ce  = $self->current_event;
-                    $self->current_event($event);
-                });
-                $todo->(@_);
-                &Coro::on_leave( sub {
-                    $self->current_event($ce);
-                });
-            }, $self, @args );
-        }
-        Coro::cede();
-
-        return;
-    };
-
-
-    sub emit {
-        no warnings 'redefine';
-        if ( defined *Coro::async{CODE} ) {
-            *emit = $emit_coro;
-            goto $emit_coro;
-        }
-        else {
-            *emit = $emit_stock;
-            goto $emit_stock;
-        }
+    # If it's not an Event::Wrappable object, make it one.
+    if ( ! blessed $listener or ! $listener->isa("Event::Wrappable") ) {
+        $listener = &Event::Wrappable::event( $listener );
     }
 
+    for my $event (@_) {
+        my $emeta = $self->metaevent($event);
+        unless ( $emeta ) {
+            require Carp;
+            Carp::confess("Event $event does not exist");
+        }
+        $emeta->listen_once( $listener );
+    }
+    return $listener;
 }
+
+sub emit {
+    my $self = shift;
+    my( $event, @args ) = @_;
+    # The event object attributes are lazy, so if one doesn't exist yet
+    # don't trigger the creation of it just to fire events into the void
+    if ( reftype $self eq 'HASH' ) {
+        return unless exists $self->{"event:$event"};
+    }
+    my $emeta = $self->metaevent($event);
+    unless ( $emeta ) {
+        require Carp;
+        Carp::confess("Event $event does not exist");
+    }
+    $emeta->emit_self( @args );
+}
+
 
 
 sub remove_all_listeners {
     my $self = shift;
-    if ( @_ ) {
-        my( $event ) = @_;
-        delete $self->_listeners->{$event};
-        delete $self->_aliases->{$event};
-        if ( $self->can('deactivate_event') ) {
-            $self->deactivate_event($event);
-        }
-    }
-    else {
-        if ( $self->can('deactivate_event') ) {
-            for ( keys %{$self->_listeners} ) {
-                $self->deactivate_event($_);
-            }
-        }
-        %{ $self->_listeners } = ();
-        %{ $self->_aliases } = ();
+    foreach ($self->get_all_events) {
+        $self->metaevent($_)->stop_all_listeners;
     }
 }
 
@@ -152,29 +108,12 @@ sub remove_all_listeners {
 sub remove_listener {
     my $self = shift;
     my( $event, $listener ) = @_;
-    if ( ! $self->event_exists($event) ) {
-        die "Event $event does not exist";
+    my $emeta = $self->metaevent($event);
+    unless ( $emeta ) {
+        require Carp;
+        Carp::confess("Event $event does not exist");
     }
-    return unless exists $self->_listeners->{$event};
-    
-    my $aliases = $self->_aliases->{$event}{0+$listener};
-    delete $self->_aliases->{$event}{0+$listener};
-    
-    if ( ref $aliases eq "ARRAY" ) {
-        for ( @$aliases ) {
-            delete $self->_aliases->{$event}{$_};
-        }
-    }
-    else {
-        $listener = $aliases;
-    }
-
-    $self->_listeners->{$event} =
-        [ grep { $_ != $listener } @{ $self->_listeners->{$event} } ];
-        
-    if ( ! @{$self->_listeners->{$event}} and $self->can('deactivate_event') ) {
-        $self->deactivate_event($event);
-    }
+    $emeta->stop_listener($listener);
 }
 
 1;
@@ -183,93 +122,87 @@ sub remove_listener {
 __END__
 =pod
 
+=encoding utf-8
+
 =head1 NAME
 
 MooseX::Event::Role - A Node style event Role for Moose
 
 =head1 VERSION
 
-version v0.2.0
+version 0.3.0_2
 
 =head1 DESCRIPTION
 
 This is the role that L<MooseX::Event> extends your class with.  All classes
 using MooseX::Event will have these methods, attributes and events.
 
-=head1 EVENTS
-
-=head2 new_listener( Str $event, CodeRef $listener )
-
-Called when a listener is added.  $event is the name of the event being listened to, and $listener is the
-listener being installed.
-
 =head1 ATTRIBUTES
 
-=head2 our Str $.current_event is rw
+=head2 my Str $.current_event is ro
 
 This is the name of the current event being triggered, or undef if no event
 is being triggered.
 
 =head1 METHODS
 
-=head2 our method event_exists( Str $event ) returns Bool
+=head2 method metaevent( Str $event ) returns Bool
 
 Returns true if $event is a valid event name for this class.
 
-=head2 our method on( Str $event, CodeRef $listener ) returns CodeRef
+=head2 method get_all_events() returns List
 
-Registers $listener as a listener on $event.  When $event is emitted ALL
+Returns a list of all registered event names in this class and any superclasses.
+
+=head2 method event_listeners( Str $event ) returns Array|Int
+
+In array context, returns a list of all of the event listeners for a
+particular event.  In scalar context, returns the number of listeners
+registered.
+
+=head2 method on( Array[Str] *@events, CodeRef $listener ) returns CodeRef
+
+Registers $listener as a listener on $event.  When $event is emitted all
 registered listeners are executed.
+
+If you are using L<Coro> then listeners are called in their own thread,
+which makes them fully Coro safe.  There is no need to use "unblock_sub"
+with MooseX::Event.
 
 Returns the listener coderef.
 
-=head2 our method once( Str $event, CodeRef $listener ) returns CodeRef
+=head2 method once( Str $event, CodeRef $listener ) returns CodeRef
 
 Registers $listener as a listener on $event. Event listeners registered via
 once will emit only once.
 
 Returns the listener coderef.
 
-=head2 our method emit( Str $event, Array[Any] *@args )
+=head2 method emit( Str $event, *@args )
 
 Normally called within the class using the MooseX::Event role.  This calls all
 of the registered listeners on $event with @args.
 
-If you're using coroutines then each listener will get its own thread and
-emit will cede before returning.
+If you're using L<Coro> then each listener is executed in its own thread.
+Emit will return immediately, the event listeners won't execute until you
+cede or block in some manner.  Normally this isn't something you have to
+think about.
 
-=head2 our method remove_all_listeners( Str $event )
+This means that MooseX::Event's listeners are Coro safe and can safely cede
+or do other Coro thread related tasks.  That is to say, you don't ever need
+to use unblock_sub.
+
+=head2 method remove_all_listeners( Str $event )
 
 Removes all listeners for $event
 
-=head2 our method remove_listener( Str $event, CodeRef $listener )
+=head2 method remove_listener( Str $event, CodeRef $listener )
 
 Removes $listener from $event
 
-=begin internal
-
-=method my method emit_stock( Str $event, Array[Any] *@args )
-
-The standard impelementation of the emit method-- calls the listeners
-immediately and in the order they were defined.
-
-
-=end internal
-
-=begin internal
-
-=method my method emit_coro( Str $event, Array[Any] *@args )
-
-The L<Coro> implementation of the emit method-- calls each of the listeners
-in its own thread and emits immediate execution by calling cede before
-returning.
-
-
-=end internal
-
 =head1 SEE ALSO
 
-Please see those modules/websites for more information related to this module.
+
 
 =over 4
 
@@ -283,13 +216,18 @@ L<MooseX::Event::Role::ClassMethods|MooseX::Event::Role::ClassMethods>
 
 =back
 
+=head1 SOURCE
+
+The development version is on github at L<http://https://github.com/iarna/MooseX-Event>
+and may be cloned from L<git://https://github.com/iarna/MooseX-Event.git>
+
 =head1 AUTHOR
 
 Rebecca Turner <becca@referencethis.com>
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2011 by Rebecca Turner.
+This software is copyright (c) 2012 by Rebecca Turner.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

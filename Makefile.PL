@@ -11,9 +11,7 @@ use ExtUtils::MakeMaker 6.30;
 my %WriteMakefileArgs = (
   "ABSTRACT" => "A Node style event Role for Moose",
   "AUTHOR" => "Rebecca Turner <becca\@referencethis.com>",
-  "BUILD_REQUIRES" => {
-    "Test::More" => 0
-  },
+  "BUILD_REQUIRES" => {},
   "CONFIGURE_REQUIRES" => {
     "ExtUtils::MakeMaker" => "6.30"
   },
@@ -23,10 +21,10 @@ my %WriteMakefileArgs = (
   "NAME" => "MooseX::Event",
   "PREREQ_PM" => {
     "Any::Moose" => 0,
-    "strict" => 0,
-    "warnings" => 0
+    "Event::Wrappable" => 0,
+    "Scalar::Util" => 0
   },
-  "VERSION" => "v0.2.0",
+  "VERSION" => "0.3.0_2",
   "test" => {
     "TESTS" => "t/*.t"
   }

@@ -1,11 +1,11 @@
 
 
 This archive contains the distribution MooseX-Event,
-version v0.2.0:
+version 0.3.0_2:
 
   A Node style event Role for Moose
 
-This software is copyright (c) 2011 by Rebecca Turner.
+This software is copyright (c) 2012 by Rebecca Turner.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.
